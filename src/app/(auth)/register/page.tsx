@@ -29,24 +29,30 @@ export default function RegisterPage() {
     setLoading(true)
     setError(null)
 
-    const supabase = createClient()
+    try {
+      const supabase = createClient()
+      const { error: signUpError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { nom, prenom, role, full_name: `${prenom} ${nom}` },
+        },
+      })
 
-    const { error: signUpError } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { nom, prenom, role },
-      },
-    })
+      if (signUpError) {
+        setError(signUpError.message === 'User already registered'
+          ? 'Un compte existe déjà avec cet email.'
+          : signUpError.message)
+        return
+      }
 
-    if (signUpError) {
-      setError(signUpError.message)
+      setSuccess(true)
+    } catch (err) {
+      console.error('Erreur inscription:', err)
+      setError('Une erreur est survenue. Vérifiez votre connexion et réessayez.')
+    } finally {
       setLoading(false)
-      return
     }
-
-    setSuccess(true)
-    setLoading(false)
   }
 
   if (success) {
