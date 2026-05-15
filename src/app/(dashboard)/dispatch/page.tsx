@@ -125,55 +125,59 @@ export default function DispatchPage() {
 
   useEffect(() => {
     async function fetchData() {
-      const supabase = createClient()
-      const today = new Date()
-      today.setHours(0, 0, 0, 0)
+      try {
+        const supabase = createClient()
+        const today = new Date()
+        today.setHours(0, 0, 0, 0)
 
-      const { data: rawMissions } = await supabase
-        .from('missions')
-        .select(`
-          id, status, type_travaux,
-          sites(address, city),
-          mission_techniciens(
-            technicien_id,
-            users(full_name)
-          )
-        `)
-        .gte('scheduled_at', today.toISOString())
-        .lt('scheduled_at', new Date(today.getTime() + 86400000).toISOString())
-        .neq('status', 'cancelled')
+        const { data: rawMissions } = await supabase
+          .from('missions')
+          .select(`
+            id, status, type_travaux,
+            sites(address, city),
+            mission_techniciens(
+              technicien_id,
+              users(full_name)
+            )
+          `)
+          .gte('scheduled_at', today.toISOString())
+          .lt('scheduled_at', new Date(today.getTime() + 86400000).toISOString())
+          .neq('status', 'cancelled')
 
-      const missions = rawMissions as MissionRow[] | null
+        const missions = rawMissions as MissionRow[] | null
 
-      if (missions) {
-        const enCours    = missions.filter((m) => m.status === 'in_progress').length
-        const aPlanifier = missions.filter((m) => m.status === 'draft' || m.status === 'pending').length
+        if (missions) {
+          const enCours    = missions.filter((m) => m.status === 'in_progress').length
+          const aPlanifier = missions.filter((m) => m.status === 'draft' || m.status === 'pending').length
 
-        const techMap = new Map<string, TechnicienSurTerrain>()
-        missions.forEach((m, idx) => {
-          m.mission_techniciens?.forEach((mt) => {
-            if (mt.users && !techMap.has(mt.technicien_id)) {
-              const nomComplet = mt.users.full_name
-              const site = m.sites
-              techMap.set(mt.technicien_id, {
-                id: mt.technicien_id,
-                nom: nomComplet,
-                initiales: initiales(nomComplet),
-                adresse: site ? `${site.address}, ${site.city}` : '',
-                statut: statutToTerrain(m.status),
-                progression: m.status === 'in_progress' ? 50 : m.status === 'assigned' ? 0 : 100,
-                info: m.status === 'in_progress' ? 'En cours' : m.status === 'assigned' ? 'En route' : 'Terminé',
-                couleur: COULEURS[idx % COULEURS.length],
-              })
-            }
+          const techMap = new Map<string, TechnicienSurTerrain>()
+          missions.forEach((m, idx) => {
+            m.mission_techniciens?.forEach((mt) => {
+              if (mt.users && !techMap.has(mt.technicien_id)) {
+                const nomComplet = mt.users.full_name
+                const site = m.sites
+                techMap.set(mt.technicien_id, {
+                  id: mt.technicien_id,
+                  nom: nomComplet,
+                  initiales: initiales(nomComplet),
+                  adresse: site ? `${site.address}, ${site.city}` : '',
+                  statut: statutToTerrain(m.status),
+                  progression: m.status === 'in_progress' ? 50 : m.status === 'assigned' ? 0 : 100,
+                  info: m.status === 'in_progress' ? 'En cours' : m.status === 'assigned' ? 'En route' : 'Terminé',
+                  couleur: COULEURS[idx % COULEURS.length],
+                })
+              }
+            })
           })
-        })
 
-        setStats({ techniciens_actifs: techMap.size, alertes: 0, missions_en_cours: enCours, a_planifier: aPlanifier })
-        setTechniciens(Array.from(techMap.values()))
+          setStats({ techniciens_actifs: techMap.size, alertes: 0, missions_en_cours: enCours, a_planifier: aPlanifier })
+          setTechniciens(Array.from(techMap.values()))
+        }
+      } catch (err) {
+        console.error('Erreur chargement dispatch:', err)
+      } finally {
+        setLoading(false)
       }
-
-      setLoading(false)
     }
     fetchData()
   }, [])
