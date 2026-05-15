@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 
@@ -10,7 +11,7 @@ interface CheckItem {
   id: string
   label: string
   fait: boolean
-  item_id?: string // ID en base si existant
+  item_id?: string
 }
 
 interface MissionInfo {
@@ -53,7 +54,7 @@ export default function RapportPage() {
   const searchParams = useSearchParams()
   const missionId = searchParams.get('mission_id')
 
-  const supabase = createClient()
+  const db = createClient() as any
 
   const [mission, setMission] = useState<MissionInfo | null>(null)
   const [technicien, setTechnicien] = useState<TechnicienInfo | null>(null)
@@ -65,92 +66,83 @@ export default function RapportPage() {
   const [valide, setValide] = useState(false)
   const [rapportId, setRapportId] = useState<string | null>(null)
 
-  // Montant fixe pour Phase 1 (sera dynamique avec intervention_parts)
   const montantHT = 294.5
   const tva = montantHT * 0.21
   const montantTTC = montantHT + tva
 
-  // ── Chargement des données ──────────────────────────────────────────────────
+  // ── Chargement ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
     async function loadData() {
-      // Charger le technicien connecté
-      const { data: { user: authUser } } = await supabase.auth.getUser()
+      const { data: { user: authUser } } = await db.auth.getUser()
       if (!authUser) { router.push('/login'); return }
 
-      const { data: profile } = await supabase
+      const { data: profile } = await db
         .from('users')
         .select('id, nom, prenom')
         .eq('auth_id', authUser.id)
         .single()
 
-      if (profile) setTechnicien(profile)
+      const tech = profile as TechnicienInfo | null
+      if (tech) setTechnicien(tech)
 
-      // Si pas de mission_id dans l'URL, chercher la mission en cours du technicien
       let targetMissionId = missionId
-      if (!targetMissionId && profile) {
+      if (!targetMissionId && tech) {
         const today = new Date()
         today.setHours(0, 0, 0, 0)
-        const { data: mt } = await supabase
+        const { data: mt } = await db
           .from('mission_techniciens')
-          .select('mission_id, missions(id, statut, date_planifiee)')
-          .eq('user_id', profile.id)
+          .select('mission_id')
+          .eq('user_id', tech.id)
           .eq('statut_acceptation', 'accepte')
-          .gte('missions.date_planifiee', today.toISOString())
           .limit(1)
           .single()
-        if (mt) targetMissionId = mt.mission_id
+        if (mt) targetMissionId = (mt as { mission_id: string }).mission_id
       }
 
       if (!targetMissionId) { setLoading(false); return }
 
-      // Charger la mission
-      const { data: missionData } = await supabase
+      // Mission
+      const { data: missionRaw } = await db
         .from('missions')
-        .select(`
-          id, titre, description, statut,
-          clients(nom),
-          sites(adresse, ville)
-        `)
+        .select('id, titre, description, statut, clients(nom), sites(adresse, ville)')
         .eq('id', targetMissionId)
         .single()
 
-      if (missionData) {
-        setMission({
-          id: missionData.id,
-          titre: missionData.titre,
-          description: missionData.description,
-          statut: missionData.statut,
-          client: (missionData.clients as { nom: string } | null),
-          site: (missionData.sites as { adresse: string; ville: string } | null),
-        })
-        if (missionData.description) setNotes(missionData.description)
+      if (missionRaw) {
+        const m = missionRaw as {
+          id: string; titre: string; description: string | null; statut: string
+          clients: { nom: string } | null
+          sites: { adresse: string; ville: string } | null
+        }
+        setMission({ id: m.id, titre: m.titre, description: m.description, statut: m.statut, client: m.clients, site: m.sites })
+        if (m.description) setNotes(m.description)
       }
 
-      // Charger ou créer le rapport
-      const { data: existingRapport } = await supabase
+      // Rapport existant
+      const { data: existingRapport } = await db
         .from('rapports')
         .select('id, notes, statut')
         .eq('mission_id', targetMissionId)
         .single()
 
       if (existingRapport) {
-        setRapportId(existingRapport.id)
-        if (existingRapport.notes) setNotes(existingRapport.notes)
-        if (existingRapport.statut === 'signed' || existingRapport.statut === 'validated') setSigne(true)
+        const r = existingRapport as { id: string; notes: string | null; statut: string }
+        setRapportId(r.id)
+        if (r.notes) setNotes(r.notes)
+        if (r.statut === 'signed' || r.statut === 'validated') setSigne(true)
       }
 
-      // Charger checklist items
-      const { data: items } = await supabase
+      // Checklist
+      const { data: items } = await db
         .from('checklist_items')
         .select('id, label, fait')
         .eq('mission_id', targetMissionId)
         .order('created_at')
 
-      if (items && items.length > 0) {
-        setChecklist(items.map((i) => ({ id: i.id, label: i.label, fait: i.fait ?? false, item_id: i.id })))
+      if (items && (items as any[]).length > 0) {
+        setChecklist((items as any[]).map((i) => ({ id: i.id, label: i.label, fait: i.fait ?? false, item_id: i.id })))
       } else {
-        // Checklist par défaut selon le type de mission
         setChecklist([
           { id: '1', label: 'Sécurité vérifiée avant intervention', fait: false },
           { id: '2', label: 'Travaux réalisés conformément au devis', fait: false },
@@ -169,26 +161,22 @@ export default function RapportPage() {
   // ── Toggle checklist ────────────────────────────────────────────────────────
 
   const toggleCheck = async (id: string) => {
-    setChecklist((prev) => prev.map((item) => (item.id === id ? { ...item, fait: !item.fait } : item)))
-
-    // Si l'item existe en base, mettre à jour
     const item = checklist.find((i) => i.id === id)
+    setChecklist((prev) => prev.map((i) => (i.id === id ? { ...i, fait: !i.fait } : i)))
     if (item?.item_id) {
-      await supabase.from('checklist_items').update({ fait: !item.fait }).eq('id', item.item_id)
+      await db.from('checklist_items').update({ fait: !item.fait }).eq('id', item.item_id)
     }
   }
 
-  // ── Validation et enregistrement ────────────────────────────────────────────
+  // ── Validation ──────────────────────────────────────────────────────────────
 
   async function handleValider() {
     if (!signe || !mission) return
     setSaving(true)
-
     try {
-      // 1. Créer ou mettre à jour le rapport
       let rId = rapportId
       if (!rId) {
-        const { data: newRapport } = await supabase.from('rapports').insert({
+        const { data: newRapport } = await db.from('rapports').insert({
           mission_id: mission.id,
           technicien_id: technicien?.id ?? null,
           notes,
@@ -196,41 +184,28 @@ export default function RapportPage() {
           montant_ht: montantHT,
           montant_ttc: montantTTC,
         }).select('id').single()
-        rId = newRapport?.id ?? null
+        rId = (newRapport as { id: string } | null)?.id ?? null
         if (rId) setRapportId(rId)
       } else {
-        await supabase.from('rapports').update({
-          notes,
-          statut: 'signed',
-          montant_ht: montantHT,
-          montant_ttc: montantTTC,
-        }).eq('id', rId)
+        await db.from('rapports').update({ notes, statut: 'signed', montant_ht: montantHT, montant_ttc: montantTTC }).eq('id', rId)
       }
 
-      // 2. Sauvegarder les checklist items s'ils n'existent pas encore en base
       const itemsSansId = checklist.filter((i) => !i.item_id)
       if (itemsSansId.length > 0) {
-        await supabase.from('checklist_items').insert(
-          itemsSansId.map((i) => ({
-            mission_id: mission.id,
-            label: i.label,
-            fait: i.fait,
-          }))
+        await db.from('checklist_items').insert(
+          itemsSansId.map((i) => ({ mission_id: mission.id, label: i.label, fait: i.fait }))
         )
       }
 
-      // 3. Mettre à jour le statut de la mission
-      await supabase.from('missions').update({ statut: 'completed' }).eq('id', mission.id)
-
+      await db.from('missions').update({ statut: 'completed' }).eq('id', mission.id)
       setValide(true)
     } catch (err) {
-      console.error('Erreur lors de la validation du rapport:', err)
+      console.error('Erreur validation rapport:', err)
     }
-
     setSaving(false)
   }
 
-  // ── États de chargement / succès ────────────────────────────────────────────
+  // ── États ───────────────────────────────────────────────────────────────────
 
   if (loading) {
     return (
@@ -252,16 +227,12 @@ export default function RapportPage() {
         <p className="text-2xl font-bold text-slate-900 mt-2">{montantTTC.toFixed(2)} €</p>
         <p className="text-xs text-slate-400">En attente de paiement</p>
         <div className="flex gap-3 mt-4">
-          <button
-            onClick={() => router.push('/technicien')}
-            className="px-5 py-3 bg-slate-100 text-slate-700 rounded-xl font-semibold text-sm hover:bg-slate-200 transition-colors"
-          >
+          <button onClick={() => router.push('/technicien')}
+            className="px-5 py-3 bg-slate-100 text-slate-700 rounded-xl font-semibold text-sm hover:bg-slate-200 transition-colors">
             Mes missions
           </button>
-          <button
-            onClick={() => router.push(`/paiement${mission ? `?mission_id=${mission.id}` : ''}`)}
-            className="px-5 py-3 bg-slate-900 text-white rounded-xl font-semibold text-sm hover:bg-slate-800 transition-colors"
-          >
+          <button onClick={() => router.push(`/paiement${mission ? `?mission_id=${mission.id}` : ''}`)}
+            className="px-5 py-3 bg-slate-900 text-white rounded-xl font-semibold text-sm hover:bg-slate-800 transition-colors">
             Paiement →
           </button>
         </div>
@@ -278,42 +249,33 @@ export default function RapportPage() {
             <span className="text-blue-400 text-xl">⚡</span>
             <span className="font-bold text-lg tracking-tight">installe.com</span>
           </div>
-          <button onClick={() => router.back()} className="text-slate-400 text-xs hover:text-white">
-            ← Retour
-          </button>
+          <button onClick={() => router.back()} className="text-slate-400 text-xs hover:text-white">← Retour</button>
         </div>
         {mission && (
           <div className="mt-3">
             <p className="text-sm font-semibold text-white">{mission.titre}</p>
-            {mission.site && (
-              <p className="text-xs text-slate-400 mt-0.5">{mission.site.adresse}, {mission.site.ville}</p>
-            )}
+            {mission.site && <p className="text-xs text-slate-400 mt-0.5">{mission.site.adresse}, {mission.site.ville}</p>}
           </div>
         )}
       </header>
 
       <main className="flex-1 px-4 py-4 space-y-4 pb-6">
 
-        {/* Infos prestataire / client */}
+        {/* Prestataire / client */}
         <div className="bg-white rounded-2xl shadow-sm p-4">
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
               {technicien ? (
                 <>
                   <p className="font-bold text-slate-900">{technicien.prenom} {technicien.nom}</p>
-                  <p className="text-slate-500 text-xs">Technicien</p>
-                  <p className="text-slate-500 text-xs">installe.com</p>
+                  <p className="text-slate-500 text-xs">Technicien · installe.com</p>
                 </>
-              ) : (
-                <p className="text-slate-400 text-xs">—</p>
-              )}
+              ) : <p className="text-slate-400 text-xs">—</p>}
             </div>
             <div className="text-right">
-              {mission?.client ? (
-                <p className="font-bold text-slate-900">{mission.client.nom}</p>
-              ) : (
-                <p className="text-slate-400 text-xs">Client non renseigné</p>
-              )}
+              {mission?.client
+                ? <p className="font-bold text-slate-900">{mission.client.nom}</p>
+                : <p className="text-slate-400 text-xs">Client non renseigné</p>}
               {mission?.site && (
                 <>
                   <p className="text-slate-500 text-xs">{mission.site.adresse}</p>
@@ -326,23 +288,15 @@ export default function RapportPage() {
 
         {/* Travaux réalisés */}
         <div className="bg-white rounded-2xl shadow-sm p-4">
-          <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2">
-            Travaux réalisés
-          </h2>
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            rows={3}
+          <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2">Travaux réalisés</h2>
+          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3}
             placeholder="Décrivez les travaux effectués…"
-            className="w-full text-sm text-slate-800 bg-slate-50 rounded-xl p-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-100 leading-relaxed placeholder-slate-300"
-          />
+            className="w-full text-sm text-slate-800 bg-slate-50 rounded-xl p-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-100 leading-relaxed placeholder-slate-300" />
         </div>
 
         {/* Checklist */}
         <div className="bg-white rounded-2xl shadow-sm px-4 py-2">
-          <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest py-2">
-            Check-list d&apos;exécution
-          </h2>
+          <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest py-2">Check-list d&apos;exécution</h2>
           {checklist.map((item) => (
             <LigneCheck key={item.id} item={item} onToggle={() => toggleCheck(item.id)} />
           ))}
@@ -350,9 +304,7 @@ export default function RapportPage() {
 
         {/* Photos */}
         <div className="bg-white rounded-2xl shadow-sm p-4">
-          <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">
-            Photos horodatées
-          </h2>
+          <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">Photos horodatées</h2>
           <div className="grid grid-cols-3 gap-2">
             <button className="bg-slate-50 border-2 border-dashed border-slate-200 rounded-xl aspect-square flex items-center justify-center text-slate-400 hover:border-blue-300 hover:text-blue-400 transition-colors">
               <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -360,94 +312,65 @@ export default function RapportPage() {
               </svg>
             </button>
           </div>
-          <p className="text-xs text-slate-400 mt-2">Upload photo → Supabase Storage (Phase 1 suite)</p>
         </div>
 
         {/* Montant */}
         <div className="bg-white rounded-2xl shadow-sm p-4">
-          <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">
-            Montant
-          </h2>
+          <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">Montant</h2>
           <div className="space-y-2 text-sm">
             {[
-              { label: 'Main d\'œuvre (3h × 65€)', montant: 195.0 },
+              { label: "Main d'œuvre (3h × 65€)", montant: 195.0 },
               { label: 'Matériel fourni', montant: 87.5 },
               { label: 'Déplacement', montant: 12.0 },
             ].map(({ label, montant }) => (
               <div key={label} className="flex justify-between text-slate-600">
-                <span>{label}</span>
-                <span>{montant.toFixed(2)} €</span>
+                <span>{label}</span><span>{montant.toFixed(2)} €</span>
               </div>
             ))}
             <div className="flex justify-between text-slate-600">
-              <span>TVA 21%</span>
-              <span>{tva.toFixed(2)} €</span>
+              <span>TVA 21%</span><span>{tva.toFixed(2)} €</span>
             </div>
             <div className="flex justify-between font-bold text-slate-900 border-t border-slate-100 pt-2 mt-1">
-              <span>Total TTC</span>
-              <span className="text-blue-600">{montantTTC.toFixed(2)} €</span>
+              <span>Total TTC</span><span className="text-blue-600">{montantTTC.toFixed(2)} €</span>
             </div>
           </div>
         </div>
 
         {/* Signatures */}
         <div className="bg-white rounded-2xl shadow-sm p-4">
-          <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">
-            Signatures
-          </h2>
+          <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">Signatures</h2>
           <div className="grid grid-cols-2 gap-3">
             <div className={`border-2 rounded-xl h-20 flex flex-col items-center justify-center text-xs gap-1 ${
               technicien ? 'border-emerald-400 bg-emerald-50 text-emerald-600' : 'border-dashed border-slate-200 text-slate-400'
             }`}>
               {technicien ? (
-                <>
-                  <span className="text-2xl">✅</span>
-                  <span className="font-medium">{technicien.prenom}</span>
-                </>
+                <><span className="text-2xl">✅</span><span className="font-medium">{technicien.prenom}</span></>
               ) : (
-                <>
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                  </svg>
-                  Technicien
-                </>
+                <><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                </svg>Technicien</>
               )}
             </div>
-            <button
-              onClick={() => setSigne(!signe)}
+            <button onClick={() => setSigne(!signe)}
               className={`border-2 rounded-xl h-20 flex flex-col items-center justify-center text-xs gap-1 transition-colors ${
-                signe
-                  ? 'border-emerald-400 bg-emerald-50 text-emerald-600'
-                  : 'border-dashed border-slate-200 text-slate-400'
-              }`}
-            >
+                signe ? 'border-emerald-400 bg-emerald-50 text-emerald-600' : 'border-dashed border-slate-200 text-slate-400'
+              }`}>
               {signe ? (
-                <>
-                  <span className="text-2xl">✅</span>
-                  <span className="font-medium">Client signé</span>
-                </>
+                <><span className="text-2xl">✅</span><span className="font-medium">Client signé</span></>
               ) : (
-                <>
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                  </svg>
-                  Client
-                </>
+                <><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                </svg>Client</>
               )}
             </button>
           </div>
         </div>
 
-        {/* Bouton valider */}
-        <button
-          onClick={handleValider}
-          disabled={!signe || saving}
+        {/* Valider */}
+        <button onClick={handleValider} disabled={!signe || saving}
           className={`w-full rounded-2xl py-3.5 font-semibold flex items-center justify-center gap-2 transition-colors ${
-            signe && !saving
-              ? 'bg-slate-900 text-white hover:bg-slate-800'
-              : 'bg-slate-100 text-slate-400 cursor-not-allowed'
-          }`}
-        >
+            signe && !saving ? 'bg-slate-900 text-white hover:bg-slate-800' : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+          }`}>
           {saving ? (
             <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>

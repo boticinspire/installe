@@ -1,5 +1,6 @@
 'use client'
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 
@@ -57,26 +58,26 @@ export default function TechnicienPage() {
   const [actionLoading, setActionLoading] = useState(false)
   const [reponse, setReponse] = useState<'accepte' | 'refuse' | null>(null)
 
-  const supabase = createClient()
+  const db = createClient() as any
 
   useEffect(() => {
     async function load() {
-      const { data: { user: authUser } } = await supabase.auth.getUser()
+      const { data: { user: authUser } } = await db.auth.getUser()
       if (!authUser) return
 
       // Profil utilisateur
-      const { data: profil } = await supabase
+      const { data: profil } = await db
         .from('users')
         .select('nom, prenom')
         .eq('id', authUser.id)
         .single()
-      setUser(profil)
+      setUser(profil as { nom: string; prenom: string } | null)
 
       // Missions du jour assignées à ce technicien
       const today = new Date()
       today.setHours(0, 0, 0, 0)
 
-      const { data: ms } = await supabase
+      const { data: ms } = await db
         .from('missions')
         .select(`
           id, titre, statut, date_planifiee, description,
@@ -107,17 +108,17 @@ export default function TechnicienPage() {
     if (!missionActive) return
     setActionLoading(true)
 
-    const { data: { user: authUser } } = await supabase.auth.getUser()
+    const { data: { user: authUser } } = await db.auth.getUser()
     if (!authUser) return
 
-    await supabase
+    await db
       .from('mission_techniciens')
       .update({ statut_acceptation: accepte ? 'accepte' : 'refuse' })
       .eq('mission_id', missionActive.id)
       .eq('user_id', authUser.id)
 
     if (accepte) {
-      await supabase
+      await db
         .from('missions')
         .update({ statut: 'in_progress' })
         .eq('id', missionActive.id)
