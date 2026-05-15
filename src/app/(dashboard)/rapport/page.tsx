@@ -1,6 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { createClient } from '@/lib/supabase/client'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -8,23 +10,23 @@ interface CheckItem {
   id: string
   label: string
   fait: boolean
+  item_id?: string // ID en base si existant
 }
 
-// ─── Données de démonstration ─────────────────────────────────────────────────
+interface MissionInfo {
+  id: string
+  titre: string
+  description: string | null
+  statut: string
+  client: { nom: string } | null
+  site: { adresse: string; ville: string } | null
+}
 
-const checklistInitiale: CheckItem[] = [
-  { id: '1', label: 'Coupure générale vérifiée', fait: true },
-  { id: '2', label: 'Câblage phase/neutre conforme', fait: true },
-  { id: '3', label: 'Disjoncteurs installés', fait: true },
-  { id: '4', label: 'Test différentiel 30mA', fait: true },
-  { id: '5', label: 'Photo tableau final + étiquette', fait: true },
-]
-
-const photosMock = [
-  { id: '1', date: '14/05', heure: '08h47' },
-  { id: '2', date: '14/05', heure: '10h12' },
-  { id: '3', date: '14/05', heure: '11h28' },
-]
+interface TechnicienInfo {
+  id: string
+  nom: string
+  prenom: string
+}
 
 // ─── Composants ───────────────────────────────────────────────────────────────
 
@@ -44,50 +46,225 @@ function LigneCheck({ item, onToggle }: { item: CheckItem; onToggle: () => void 
   )
 }
 
-function CartePhoto({ photo }: { photo: { id: string; date: string; heure: string } }) {
-  return (
-    <div className="bg-slate-100 rounded-xl aspect-square flex flex-col items-center justify-center gap-1 relative overflow-hidden">
-      <svg className="w-8 h-8 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-      </svg>
-      <div className="text-center">
-        <p className="text-xs font-semibold text-slate-600">{photo.date}</p>
-        <p className="text-xs text-slate-400">{photo.heure}</p>
-        <p className="text-xs text-emerald-500 font-medium">GPS ✓</p>
-      </div>
-    </div>
-  )
-}
-
 // ─── Page principale ──────────────────────────────────────────────────────────
 
 export default function RapportPage() {
-  const [checklist, setChecklist] = useState(checklistInitiale)
-  const [notes, setNotes] = useState(
-    'Remplacement tableau électrique principal — 3×16A + différentiel 30mA. Mise en conformité RGIE. Test complet effectué.'
-  )
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const missionId = searchParams.get('mission_id')
+
+  const supabase = createClient()
+
+  const [mission, setMission] = useState<MissionInfo | null>(null)
+  const [technicien, setTechnicien] = useState<TechnicienInfo | null>(null)
+  const [checklist, setChecklist] = useState<CheckItem[]>([])
+  const [notes, setNotes] = useState('')
   const [signe, setSigne] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
   const [valide, setValide] = useState(false)
+  const [rapportId, setRapportId] = useState<string | null>(null)
 
-  const toggleCheck = (id: string) => {
-    setChecklist((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, fait: !item.fait } : item))
-    )
-  }
-
-  const montantHT = 195 + 87.5 + 12
+  // Montant fixe pour Phase 1 (sera dynamique avec intervention_parts)
+  const montantHT = 294.5
   const tva = montantHT * 0.21
   const montantTTC = montantHT + tva
+
+  // ── Chargement des données ──────────────────────────────────────────────────
+
+  useEffect(() => {
+    async function loadData() {
+      // Charger le technicien connecté
+      const { data: { user: authUser } } = await supabase.auth.getUser()
+      if (!authUser) { router.push('/login'); return }
+
+      const { data: profile } = await supabase
+        .from('users')
+        .select('id, nom, prenom')
+        .eq('auth_id', authUser.id)
+        .single()
+
+      if (profile) setTechnicien(profile)
+
+      // Si pas de mission_id dans l'URL, chercher la mission en cours du technicien
+      let targetMissionId = missionId
+      if (!targetMissionId && profile) {
+        const today = new Date()
+        today.setHours(0, 0, 0, 0)
+        const { data: mt } = await supabase
+          .from('mission_techniciens')
+          .select('mission_id, missions(id, statut, date_planifiee)')
+          .eq('user_id', profile.id)
+          .eq('statut_acceptation', 'accepte')
+          .gte('missions.date_planifiee', today.toISOString())
+          .limit(1)
+          .single()
+        if (mt) targetMissionId = mt.mission_id
+      }
+
+      if (!targetMissionId) { setLoading(false); return }
+
+      // Charger la mission
+      const { data: missionData } = await supabase
+        .from('missions')
+        .select(`
+          id, titre, description, statut,
+          clients(nom),
+          sites(adresse, ville)
+        `)
+        .eq('id', targetMissionId)
+        .single()
+
+      if (missionData) {
+        setMission({
+          id: missionData.id,
+          titre: missionData.titre,
+          description: missionData.description,
+          statut: missionData.statut,
+          client: (missionData.clients as { nom: string } | null),
+          site: (missionData.sites as { adresse: string; ville: string } | null),
+        })
+        if (missionData.description) setNotes(missionData.description)
+      }
+
+      // Charger ou créer le rapport
+      const { data: existingRapport } = await supabase
+        .from('rapports')
+        .select('id, notes, statut')
+        .eq('mission_id', targetMissionId)
+        .single()
+
+      if (existingRapport) {
+        setRapportId(existingRapport.id)
+        if (existingRapport.notes) setNotes(existingRapport.notes)
+        if (existingRapport.statut === 'signed' || existingRapport.statut === 'validated') setSigne(true)
+      }
+
+      // Charger checklist items
+      const { data: items } = await supabase
+        .from('checklist_items')
+        .select('id, label, fait')
+        .eq('mission_id', targetMissionId)
+        .order('created_at')
+
+      if (items && items.length > 0) {
+        setChecklist(items.map((i) => ({ id: i.id, label: i.label, fait: i.fait ?? false, item_id: i.id })))
+      } else {
+        // Checklist par défaut selon le type de mission
+        setChecklist([
+          { id: '1', label: 'Sécurité vérifiée avant intervention', fait: false },
+          { id: '2', label: 'Travaux réalisés conformément au devis', fait: false },
+          { id: '3', label: 'Tests de bon fonctionnement effectués', fait: false },
+          { id: '4', label: 'Zone de travail nettoyée', fait: false },
+          { id: '5', label: 'Client informé des travaux réalisés', fait: false },
+        ])
+      }
+
+      setLoading(false)
+    }
+
+    loadData()
+  }, [missionId])
+
+  // ── Toggle checklist ────────────────────────────────────────────────────────
+
+  const toggleCheck = async (id: string) => {
+    setChecklist((prev) => prev.map((item) => (item.id === id ? { ...item, fait: !item.fait } : item)))
+
+    // Si l'item existe en base, mettre à jour
+    const item = checklist.find((i) => i.id === id)
+    if (item?.item_id) {
+      await supabase.from('checklist_items').update({ fait: !item.fait }).eq('id', item.item_id)
+    }
+  }
+
+  // ── Validation et enregistrement ────────────────────────────────────────────
+
+  async function handleValider() {
+    if (!signe || !mission) return
+    setSaving(true)
+
+    try {
+      // 1. Créer ou mettre à jour le rapport
+      let rId = rapportId
+      if (!rId) {
+        const { data: newRapport } = await supabase.from('rapports').insert({
+          mission_id: mission.id,
+          technicien_id: technicien?.id ?? null,
+          notes,
+          statut: 'signed',
+          montant_ht: montantHT,
+          montant_ttc: montantTTC,
+        }).select('id').single()
+        rId = newRapport?.id ?? null
+        if (rId) setRapportId(rId)
+      } else {
+        await supabase.from('rapports').update({
+          notes,
+          statut: 'signed',
+          montant_ht: montantHT,
+          montant_ttc: montantTTC,
+        }).eq('id', rId)
+      }
+
+      // 2. Sauvegarder les checklist items s'ils n'existent pas encore en base
+      const itemsSansId = checklist.filter((i) => !i.item_id)
+      if (itemsSansId.length > 0) {
+        await supabase.from('checklist_items').insert(
+          itemsSansId.map((i) => ({
+            mission_id: mission.id,
+            label: i.label,
+            fait: i.fait,
+          }))
+        )
+      }
+
+      // 3. Mettre à jour le statut de la mission
+      await supabase.from('missions').update({ statut: 'completed' }).eq('id', mission.id)
+
+      setValide(true)
+    } catch (err) {
+      console.error('Erreur lors de la validation du rapport:', err)
+    }
+
+    setSaving(false)
+  }
+
+  // ── États de chargement / succès ────────────────────────────────────────────
+
+  if (loading) {
+    return (
+      <div className="max-w-md mx-auto min-h-screen flex items-center justify-center bg-slate-50">
+        <svg className="w-8 h-8 animate-spin text-blue-500" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+      </div>
+    )
+  }
 
   if (valide) {
     return (
       <div className="max-w-md mx-auto min-h-screen flex flex-col items-center justify-center bg-slate-50 px-6 text-center space-y-4">
         <div className="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center text-3xl">✅</div>
         <h2 className="text-lg font-bold text-slate-900">Rapport validé !</h2>
-        <p className="text-sm text-slate-500">Le rapport a été envoyé au client et au secrétariat.</p>
+        <p className="text-sm text-slate-500">Le rapport a été enregistré et la mission est terminée.</p>
         <p className="text-2xl font-bold text-slate-900 mt-2">{montantTTC.toFixed(2)} €</p>
         <p className="text-xs text-slate-400">En attente de paiement</p>
+        <div className="flex gap-3 mt-4">
+          <button
+            onClick={() => router.push('/technicien')}
+            className="px-5 py-3 bg-slate-100 text-slate-700 rounded-xl font-semibold text-sm hover:bg-slate-200 transition-colors"
+          >
+            Mes missions
+          </button>
+          <button
+            onClick={() => router.push(`/paiement${mission ? `?mission_id=${mission.id}` : ''}`)}
+            className="px-5 py-3 bg-slate-900 text-white rounded-xl font-semibold text-sm hover:bg-slate-800 transition-colors"
+          >
+            Paiement →
+          </button>
+        </div>
       </div>
     )
   }
@@ -101,8 +278,18 @@ export default function RapportPage() {
             <span className="text-blue-400 text-xl">⚡</span>
             <span className="font-bold text-lg tracking-tight">installe.com</span>
           </div>
-          <span className="text-slate-400 text-xs">Forfait Free · Mettre à niveau ✕</span>
+          <button onClick={() => router.back()} className="text-slate-400 text-xs hover:text-white">
+            ← Retour
+          </button>
         </div>
+        {mission && (
+          <div className="mt-3">
+            <p className="text-sm font-semibold text-white">{mission.titre}</p>
+            {mission.site && (
+              <p className="text-xs text-slate-400 mt-0.5">{mission.site.adresse}, {mission.site.ville}</p>
+            )}
+          </div>
+        )}
       </header>
 
       <main className="flex-1 px-4 py-4 space-y-4 pb-6">
@@ -111,16 +298,28 @@ export default function RapportPage() {
         <div className="bg-white rounded-2xl shadow-sm p-4">
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
-              <p className="font-bold text-slate-900">Marc Leroy</p>
-              <p className="text-slate-500 text-xs">Électricien cert.</p>
-              <p className="text-slate-500 text-xs">installe.com</p>
-              <p className="text-slate-500 text-xs mt-1">BE 0123.456.789</p>
+              {technicien ? (
+                <>
+                  <p className="font-bold text-slate-900">{technicien.prenom} {technicien.nom}</p>
+                  <p className="text-slate-500 text-xs">Technicien</p>
+                  <p className="text-slate-500 text-xs">installe.com</p>
+                </>
+              ) : (
+                <p className="text-slate-400 text-xs">—</p>
+              )}
             </div>
             <div className="text-right">
-              <p className="font-bold text-slate-900">M. Fontaine</p>
-              <p className="text-slate-500 text-xs">12 rue des Tilleuls</p>
-              <p className="text-slate-500 text-xs">5000 Namur</p>
-              <p className="text-slate-500 text-xs mt-1">+32 476 00 11 22</p>
+              {mission?.client ? (
+                <p className="font-bold text-slate-900">{mission.client.nom}</p>
+              ) : (
+                <p className="text-slate-400 text-xs">Client non renseigné</p>
+              )}
+              {mission?.site && (
+                <>
+                  <p className="text-slate-500 text-xs">{mission.site.adresse}</p>
+                  <p className="text-slate-500 text-xs">{mission.site.ville}</p>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -134,7 +333,8 @@ export default function RapportPage() {
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             rows={3}
-            className="w-full text-sm text-slate-800 bg-slate-50 rounded-xl p-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-100 leading-relaxed"
+            placeholder="Décrivez les travaux effectués…"
+            className="w-full text-sm text-slate-800 bg-slate-50 rounded-xl p-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-100 leading-relaxed placeholder-slate-300"
           />
         </div>
 
@@ -151,18 +351,16 @@ export default function RapportPage() {
         {/* Photos */}
         <div className="bg-white rounded-2xl shadow-sm p-4">
           <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">
-            Photos horodatées ({photosMock.length})
+            Photos horodatées
           </h2>
           <div className="grid grid-cols-3 gap-2">
-            {photosMock.map((photo) => (
-              <CartePhoto key={photo.id} photo={photo} />
-            ))}
             <button className="bg-slate-50 border-2 border-dashed border-slate-200 rounded-xl aspect-square flex items-center justify-center text-slate-400 hover:border-blue-300 hover:text-blue-400 transition-colors">
               <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
             </button>
           </div>
+          <p className="text-xs text-slate-400 mt-2">Upload photo → Supabase Storage (Phase 1 suite)</p>
         </div>
 
         {/* Montant */}
@@ -198,11 +396,22 @@ export default function RapportPage() {
             Signatures
           </h2>
           <div className="grid grid-cols-2 gap-3">
-            <div className="border-2 border-dashed border-slate-200 rounded-xl h-20 flex flex-col items-center justify-center text-slate-400 text-xs gap-1">
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-              </svg>
-              Technicien
+            <div className={`border-2 rounded-xl h-20 flex flex-col items-center justify-center text-xs gap-1 ${
+              technicien ? 'border-emerald-400 bg-emerald-50 text-emerald-600' : 'border-dashed border-slate-200 text-slate-400'
+            }`}>
+              {technicien ? (
+                <>
+                  <span className="text-2xl">✅</span>
+                  <span className="font-medium">{technicien.prenom}</span>
+                </>
+              ) : (
+                <>
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                  </svg>
+                  Technicien
+                </>
+              )}
             </div>
             <button
               onClick={() => setSigne(!signe)}
@@ -231,17 +440,25 @@ export default function RapportPage() {
 
         {/* Bouton valider */}
         <button
-          onClick={() => signe && setValide(true)}
+          onClick={handleValider}
+          disabled={!signe || saving}
           className={`w-full rounded-2xl py-3.5 font-semibold flex items-center justify-center gap-2 transition-colors ${
-            signe
+            signe && !saving
               ? 'bg-slate-900 text-white hover:bg-slate-800'
               : 'bg-slate-100 text-slate-400 cursor-not-allowed'
           }`}
         >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          {signe ? 'Valider et envoyer le rapport' : 'Signature client requise'}
+          {saving ? (
+            <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
+          ) : (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          )}
+          {saving ? 'Enregistrement…' : signe ? 'Valider et envoyer le rapport' : 'Signature client requise'}
         </button>
       </main>
     </div>

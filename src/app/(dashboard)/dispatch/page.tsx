@@ -7,6 +7,14 @@ import { createClient } from '@/lib/supabase/client'
 
 type StatutMission = 'draft' | 'pending' | 'assigned' | 'in_progress' | 'completed' | 'cancelled'
 
+interface MissionRow {
+  id: string
+  statut: StatutMission
+  titre: string
+  sites: { adresse: string; ville: string } | null
+  mission_techniciens: { user_id: string; users: { nom: string; prenom: string } | null }[]
+}
+
 interface TechnicienSurTerrain {
   id: string
   nom: string
@@ -121,7 +129,7 @@ export default function DispatchPage() {
       const today = new Date()
       today.setHours(0, 0, 0, 0)
 
-      const { data: missions } = await supabase
+      const { data: rawMissions } = await supabase
         .from('missions')
         .select(`
           id, statut, titre,
@@ -135,6 +143,8 @@ export default function DispatchPage() {
         .lt('date_planifiee', new Date(today.getTime() + 86400000).toISOString())
         .neq('statut', 'cancelled')
 
+      const missions = rawMissions as MissionRow[] | null
+
       if (missions) {
         const enCours = missions.filter((m) => m.statut === 'in_progress').length
         const aPlanifier = missions.filter((m) => m.statut === 'draft' || m.statut === 'pending').length
@@ -142,11 +152,11 @@ export default function DispatchPage() {
         // Construire la liste des techniciens sur le terrain
         const techMap = new Map<string, TechnicienSurTerrain>()
         missions.forEach((m, idx) => {
-          const mts = m.mission_techniciens as { user_id: string; users: { nom: string; prenom: string } | null }[]
+          const mts = m.mission_techniciens
           mts?.forEach((mt) => {
             if (mt.users && !techMap.has(mt.user_id)) {
               const nomComplet = `${mt.users.prenom} ${mt.users.nom}`
-              const site = m.sites as { adresse: string; ville: string } | null
+              const site = m.sites
               techMap.set(mt.user_id, {
                 id: mt.user_id,
                 nom: nomComplet,
