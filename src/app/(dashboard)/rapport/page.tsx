@@ -18,30 +18,25 @@ interface CheckItem {
 
 interface MissionInfo {
   id: string
-  titre: string
-  description: string | null
-  statut: string
-  client: { nom: string } | null
-  site: { adresse: string; ville: string } | null
+  type_travaux: string
+  notes: string | null
+  status: string
+  client: { full_name: string } | null
+  site: { address: string; city: string } | null
 }
 
-interface TechnicienInfo {
+interface TechInfo {
   id: string
-  nom: string
-  prenom: string
+  full_name: string
 }
 
 // ─── Composants ───────────────────────────────────────────────────────────────
 
 function LigneCheck({ item, onToggle }: { item: CheckItem; onToggle: () => void }) {
   return (
-    <button
-      onClick={onToggle}
-      className="w-full flex items-center justify-between py-2.5 border-b border-slate-100 last:border-0"
-    >
-      <span className={`text-sm ${item.fait ? 'text-slate-800' : 'text-slate-400'}`}>
-        {item.label}
-      </span>
+    <button onClick={onToggle}
+      className="w-full flex items-center justify-between py-2.5 border-b border-slate-100 last:border-0">
+      <span className={`text-sm ${item.fait ? 'text-slate-800' : 'text-slate-400'}`}>{item.label}</span>
       <span className={`text-xs font-bold ml-3 shrink-0 ${item.fait ? 'text-emerald-500' : 'text-slate-300'}`}>
         {item.fait ? '✓ OK' : '—'}
       </span>
@@ -49,7 +44,7 @@ function LigneCheck({ item, onToggle }: { item: CheckItem; onToggle: () => void 
   )
 }
 
-// ─── Page principale ──────────────────────────────────────────────────────────
+// ─── Page wrapper Suspense ────────────────────────────────────────────────────
 
 export default function RapportPage() {
   return (
@@ -66,6 +61,8 @@ export default function RapportPage() {
   )
 }
 
+// ─── Page principale ──────────────────────────────────────────────────────────
+
 function RapportInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -74,7 +71,7 @@ function RapportInner() {
   const db = createClient() as any
 
   const [mission, setMission] = useState<MissionInfo | null>(null)
-  const [technicien, setTechnicien] = useState<TechnicienInfo | null>(null)
+  const [tech, setTech] = useState<TechInfo | null>(null)
   const [checklist, setChecklist] = useState<CheckItem[]>([])
   const [notes, setNotes] = useState('')
   const [signe, setSigne] = useState(false)
@@ -83,82 +80,63 @@ function RapportInner() {
   const [valide, setValide] = useState(false)
   const [rapportId, setRapportId] = useState<string | null>(null)
 
-  const montantHT = 294.5
-  const tva = montantHT * 0.21
+  const montantHT  = 294.5
+  const tva        = montantHT * 0.21
   const montantTTC = montantHT + tva
 
   // ── Chargement ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    async function loadData() {
+    async function load() {
       const { data: { user: authUser } } = await db.auth.getUser()
       if (!authUser) { router.push('/login'); return }
 
-      const { data: profile } = await db
-        .from('users')
-        .select('id, nom, prenom')
-        .eq('auth_id', authUser.id)
-        .single()
+      // users.id = auth UUID directement
+      const { data: profil } = await db.from('users').select('id, full_name').eq('id', authUser.id).single()
+      const techData = profil as TechInfo | null
+      if (techData) setTech(techData)
 
-      const tech = profile as TechnicienInfo | null
-      if (tech) setTechnicien(tech)
-
-      let targetMissionId = missionId
-      if (!targetMissionId && tech) {
-        const today = new Date()
-        today.setHours(0, 0, 0, 0)
+      // Résoudre mission_id
+      let targetId = missionId
+      if (!targetId && techData) {
         const { data: mt } = await db
           .from('mission_techniciens')
           .select('mission_id')
-          .eq('user_id', tech.id)
-          .eq('statut_acceptation', 'accepte')
+          .eq('technicien_id', techData.id)
+          .eq('status', 'accepted')
           .limit(1)
           .single()
-        if (mt) targetMissionId = (mt as { mission_id: string }).mission_id
+        if (mt) targetId = (mt as { mission_id: string }).mission_id
       }
 
-      if (!targetMissionId) { setLoading(false); return }
+      if (!targetId) { setLoading(false); return }
 
       // Mission
-      const { data: missionRaw } = await db
+      const { data: mRaw } = await db
         .from('missions')
-        .select('id, titre, description, statut, clients(nom), sites(adresse, ville)')
-        .eq('id', targetMissionId)
+        .select('id, type_travaux, notes, status, clients(full_name), sites(address, city)')
+        .eq('id', targetId)
         .single()
 
-      if (missionRaw) {
-        const m = missionRaw as {
-          id: string; titre: string; description: string | null; statut: string
-          clients: { nom: string } | null
-          sites: { adresse: string; ville: string } | null
-        }
-        setMission({ id: m.id, titre: m.titre, description: m.description, statut: m.statut, client: m.clients, site: m.sites })
-        if (m.description) setNotes(m.description)
+      if (mRaw) {
+        const m = mRaw as { id: string; type_travaux: string; notes: string | null; status: string; clients: { full_name: string } | null; sites: { address: string; city: string } | null }
+        setMission({ id: m.id, type_travaux: m.type_travaux, notes: m.notes, status: m.status, client: m.clients, site: m.sites })
+        if (m.notes) setNotes(m.notes)
       }
 
       // Rapport existant
-      const { data: existingRapport } = await db
-        .from('rapports')
-        .select('id, notes, statut')
-        .eq('mission_id', targetMissionId)
-        .single()
-
-      if (existingRapport) {
-        const r = existingRapport as { id: string; notes: string | null; statut: string }
+      const { data: rapportRaw } = await db.from('rapports').select('id, notes, status').eq('mission_id', targetId).single()
+      if (rapportRaw) {
+        const r = rapportRaw as { id: string; notes: string | null; status: string }
         setRapportId(r.id)
         if (r.notes) setNotes(r.notes)
-        if (r.statut === 'signed' || r.statut === 'validated') setSigne(true)
+        if (r.status === 'signed' || r.status === 'validated') setSigne(true)
       }
 
       // Checklist
-      const { data: items } = await db
-        .from('checklist_items')
-        .select('id, label, fait')
-        .eq('mission_id', targetMissionId)
-        .order('created_at')
-
+      const { data: items } = await db.from('checklist_items').select('id, label, completed').eq('mission_id', targetId).order('created_at')
       if (items && (items as any[]).length > 0) {
-        setChecklist((items as any[]).map((i) => ({ id: i.id, label: i.label, fait: i.fait ?? false, item_id: i.id })))
+        setChecklist((items as any[]).map((i) => ({ id: i.id, label: i.label, fait: i.completed ?? false, item_id: i.id })))
       } else {
         setChecklist([
           { id: '1', label: 'Sécurité vérifiée avant intervention', fait: false },
@@ -171,8 +149,7 @@ function RapportInner() {
 
       setLoading(false)
     }
-
-    loadData()
+    load()
   }, [missionId])
 
   // ── Toggle checklist ────────────────────────────────────────────────────────
@@ -181,7 +158,7 @@ function RapportInner() {
     const item = checklist.find((i) => i.id === id)
     setChecklist((prev) => prev.map((i) => (i.id === id ? { ...i, fait: !i.fait } : i)))
     if (item?.item_id) {
-      await db.from('checklist_items').update({ fait: !item.fait }).eq('id', item.item_id)
+      await db.from('checklist_items').update({ completed: !item.fait }).eq('id', item.item_id)
     }
   }
 
@@ -193,28 +170,27 @@ function RapportInner() {
     try {
       let rId = rapportId
       if (!rId) {
-        const { data: newRapport } = await db.from('rapports').insert({
+        const { data: nr } = await db.from('rapports').insert({
           mission_id: mission.id,
-          technicien_id: technicien?.id ?? null,
+          generated_by: tech?.id ?? null,
           notes,
-          statut: 'signed',
+          status: 'signed',
           montant_ht: montantHT,
           montant_ttc: montantTTC,
         }).select('id').single()
-        rId = (newRapport as { id: string } | null)?.id ?? null
+        rId = (nr as { id: string } | null)?.id ?? null
         if (rId) setRapportId(rId)
       } else {
-        await db.from('rapports').update({ notes, statut: 'signed', montant_ht: montantHT, montant_ttc: montantTTC }).eq('id', rId)
+        await db.from('rapports').update({ notes, status: 'signed', montant_ht: montantHT, montant_ttc: montantTTC }).eq('id', rId)
       }
 
-      const itemsSansId = checklist.filter((i) => !i.item_id)
-      if (itemsSansId.length > 0) {
-        await db.from('checklist_items').insert(
-          itemsSansId.map((i) => ({ mission_id: mission.id, label: i.label, fait: i.fait }))
-        )
+      // Checklist items sans id en base
+      const newItems = checklist.filter((i) => !i.item_id)
+      if (newItems.length > 0) {
+        await db.from('checklist_items').insert(newItems.map((i) => ({ mission_id: mission.id, label: i.label, completed: i.fait })))
       }
 
-      await db.from('missions').update({ statut: 'completed' }).eq('id', mission.id)
+      await db.from('missions').update({ status: 'completed' }).eq('id', mission.id)
       setValide(true)
     } catch (err) {
       console.error('Erreur validation rapport:', err)
@@ -259,7 +235,7 @@ function RapportInner() {
 
   return (
     <div className="max-w-md mx-auto min-h-screen flex flex-col bg-slate-50">
-      {/* ── Header ── */}
+      {/* Header */}
       <header className="bg-slate-900 text-white px-5 pt-12 pb-5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -270,8 +246,8 @@ function RapportInner() {
         </div>
         {mission && (
           <div className="mt-3">
-            <p className="text-sm font-semibold text-white">{mission.titre}</p>
-            {mission.site && <p className="text-xs text-slate-400 mt-0.5">{mission.site.adresse}, {mission.site.ville}</p>}
+            <p className="text-sm font-semibold text-white">{mission.type_travaux}</p>
+            {mission.site && <p className="text-xs text-slate-400 mt-0.5">{mission.site.address}, {mission.site.city}</p>}
           </div>
         )}
       </header>
@@ -282,22 +258,16 @@ function RapportInner() {
         <div className="bg-white rounded-2xl shadow-sm p-4">
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
-              {technicien ? (
-                <>
-                  <p className="font-bold text-slate-900">{technicien.prenom} {technicien.nom}</p>
-                  <p className="text-slate-500 text-xs">Technicien · installe.com</p>
-                </>
+              {tech ? (
+                <><p className="font-bold text-slate-900">{tech.full_name}</p><p className="text-slate-500 text-xs">Technicien · installe.com</p></>
               ) : <p className="text-slate-400 text-xs">—</p>}
             </div>
             <div className="text-right">
               {mission?.client
-                ? <p className="font-bold text-slate-900">{mission.client.nom}</p>
+                ? <p className="font-bold text-slate-900">{mission.client.full_name}</p>
                 : <p className="text-slate-400 text-xs">Client non renseigné</p>}
               {mission?.site && (
-                <>
-                  <p className="text-slate-500 text-xs">{mission.site.adresse}</p>
-                  <p className="text-slate-500 text-xs">{mission.site.ville}</p>
-                </>
+                <><p className="text-slate-500 text-xs">{mission.site.address}</p><p className="text-slate-500 text-xs">{mission.site.city}</p></>
               )}
             </div>
           </div>
@@ -314,9 +284,7 @@ function RapportInner() {
         {/* Checklist */}
         <div className="bg-white rounded-2xl shadow-sm px-4 py-2">
           <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest py-2">Check-list d&apos;exécution</h2>
-          {checklist.map((item) => (
-            <LigneCheck key={item.id} item={item} onToggle={() => toggleCheck(item.id)} />
-          ))}
+          {checklist.map((item) => <LigneCheck key={item.id} item={item} onToggle={() => toggleCheck(item.id)} />)}
         </div>
 
         {/* Photos */}
@@ -344,9 +312,7 @@ function RapportInner() {
                 <span>{label}</span><span>{montant.toFixed(2)} €</span>
               </div>
             ))}
-            <div className="flex justify-between text-slate-600">
-              <span>TVA 21%</span><span>{tva.toFixed(2)} €</span>
-            </div>
+            <div className="flex justify-between text-slate-600"><span>TVA 21%</span><span>{tva.toFixed(2)} €</span></div>
             <div className="flex justify-between font-bold text-slate-900 border-t border-slate-100 pt-2 mt-1">
               <span>Total TTC</span><span className="text-blue-600">{montantTTC.toFixed(2)} €</span>
             </div>
@@ -358,27 +324,21 @@ function RapportInner() {
           <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">Signatures</h2>
           <div className="grid grid-cols-2 gap-3">
             <div className={`border-2 rounded-xl h-20 flex flex-col items-center justify-center text-xs gap-1 ${
-              technicien ? 'border-emerald-400 bg-emerald-50 text-emerald-600' : 'border-dashed border-slate-200 text-slate-400'
+              tech ? 'border-emerald-400 bg-emerald-50 text-emerald-600' : 'border-dashed border-slate-200 text-slate-400'
             }`}>
-              {technicien ? (
-                <><span className="text-2xl">✅</span><span className="font-medium">{technicien.prenom}</span></>
-              ) : (
-                <><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                </svg>Technicien</>
-              )}
+              {tech
+                ? <><span className="text-2xl">✅</span><span className="font-medium">{tech.full_name.split(' ')[0]}</span></>
+                : <><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>Technicien</>
+              }
             </div>
             <button onClick={() => setSigne(!signe)}
               className={`border-2 rounded-xl h-20 flex flex-col items-center justify-center text-xs gap-1 transition-colors ${
                 signe ? 'border-emerald-400 bg-emerald-50 text-emerald-600' : 'border-dashed border-slate-200 text-slate-400'
               }`}>
-              {signe ? (
-                <><span className="text-2xl">✅</span><span className="font-medium">Client signé</span></>
-              ) : (
-                <><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                </svg>Client</>
-              )}
+              {signe
+                ? <><span className="text-2xl">✅</span><span className="font-medium">Client signé</span></>
+                : <><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>Client</>
+              }
             </button>
           </div>
         </div>
@@ -388,16 +348,10 @@ function RapportInner() {
           className={`w-full rounded-2xl py-3.5 font-semibold flex items-center justify-center gap-2 transition-colors ${
             signe && !saving ? 'bg-slate-900 text-white hover:bg-slate-800' : 'bg-slate-100 text-slate-400 cursor-not-allowed'
           }`}>
-          {saving ? (
-            <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-            </svg>
-          ) : (
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          )}
+          {saving
+            ? <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+            : <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          }
           {saving ? 'Enregistrement…' : signe ? 'Valider et envoyer le rapport' : 'Signature client requise'}
         </button>
       </main>

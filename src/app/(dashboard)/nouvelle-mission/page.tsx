@@ -2,6 +2,7 @@
 
 export const dynamic = 'force-dynamic'
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
@@ -10,29 +11,28 @@ import { createClient } from '@/lib/supabase/client'
 
 type Priorite = 'Normal' | 'Urgent' | 'Planifié'
 
-interface Client { id: string; nom: string }
-interface Site   { id: string; nom: string; adresse: string; ville: string; client_id: string }
-interface User   { id: string; nom: string; prenom: string }
+interface Client { id: string; full_name: string }
+interface Site   { id: string; label: string; address: string; city: string; client_id: string }
+interface User   { id: string; full_name: string }
 
 const TYPES_TRAVAUX = ['Électricité', 'Plomberie', 'Robotique', 'Second œuvre', 'CVC', 'Serrurerie']
 const PRIORITES: Priorite[] = ['Normal', 'Urgent', 'Planifié']
 const COULEURS = ['bg-blue-600', 'bg-violet-600', 'bg-emerald-600', 'bg-amber-600', 'bg-rose-600']
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+function initiales(fullName: string) {
+  return fullName.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2)
+}
 
-function initiales(prenom: string, nom: string) {
-  return `${prenom[0] ?? ''}${nom[0] ?? ''}`.toUpperCase()
+function prenom(fullName: string) {
+  return fullName.split(' ')[0] ?? ''
 }
 
 function BoutonChoix({ label, actif, onClick }: { label: string; actif: boolean; onClick: () => void }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <button type="button" onClick={onClick}
       className={`px-4 py-2 rounded-xl border text-sm font-medium transition-colors ${
         actif ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-700'
-      }`}
-    >
+      }`}>
       {label}
     </button>
   )
@@ -54,7 +54,6 @@ export default function NouvelleMissionPage() {
   const router = useRouter()
   const [etape, setEtape] = useState(1)
 
-  // Données du formulaire
   const [type, setType] = useState('')
   const [clientId, setClientId] = useState('')
   const [siteId, setSiteId] = useState('')
@@ -63,47 +62,48 @@ export default function NouvelleMissionPage() {
   const [date, setDate] = useState('')
   const [description, setDescription] = useState('')
 
-  // Données Supabase
   const [clients, setClients] = useState<Client[]>([])
   const [sites, setSites] = useState<Site[]>([])
   const [techniciens, setTechniciens] = useState<User[]>([])
   const [loading, setLoading] = useState(false)
   const [envoye, setEnvoye] = useState(false)
 
-  const supabase = createClient()
-
   useEffect(() => {
     async function loadData() {
+      const supabase = createClient()
       const [{ data: cls }, { data: techs }] = await Promise.all([
-        supabase.from('clients').select('id, nom').order('nom'),
-        supabase.from('users').select('id, nom, prenom').eq('role', 'technicien').order('nom'),
+        supabase.from('clients').select('id, full_name').order('full_name'),
+        supabase.from('users').select('id, full_name').eq('role', 'technicien').order('full_name'),
       ])
-      setClients(cls ?? [])
-      setTechniciens(techs ?? [])
+      setClients((cls ?? []) as Client[])
+      setTechniciens((techs ?? []) as User[])
     }
     loadData()
   }, [])
 
   useEffect(() => {
     if (!clientId) { setSites([]); setSiteId(''); return }
-    supabase.from('sites').select('id, nom, adresse, ville, client_id').eq('client_id', clientId)
-      .then(({ data }) => { setSites(data ?? []); setSiteId('') })
+    const supabase = createClient()
+    supabase.from('sites').select('id, label, address, city, client_id').eq('client_id', clientId)
+      .then(({ data }) => { setSites((data ?? []) as Site[]); setSiteId('') })
   }, [clientId])
 
-  const clientSelectionne = clients.find((c) => c.id === clientId)
-  const siteSelectionne   = sites.find((s) => s.id === siteId)
-  const techSelectionne   = techniciens.find((t) => t.id === technicienId)
+  const clientSelectionne  = clients.find((c) => c.id === clientId)
+  const siteSelectionne    = sites.find((s) => s.id === siteId)
+  const techSelectionne    = techniciens.find((t) => t.id === technicienId)
 
   async function handleSubmit() {
     setLoading(true)
+    const supabase = createClient()
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data: mission, error } = await (supabase.from('missions') as any).insert({
+      client_id: clientId,
       site_id: siteId || null,
-      client_id: clientId || null,
-      titre: `${type} — ${siteSelectionne?.adresse ?? ''}`,
-      description,
-      statut: technicienId ? 'assigned' : 'pending',
-      date_planifiee: date || null,
+      type_travaux: type,
+      notes: description || null,
+      status: technicienId ? 'assigned' : 'pending',
+      scheduled_at: date || null,
     }).select().single()
 
     if (error || !mission) { setLoading(false); return }
@@ -112,8 +112,8 @@ export default function NouvelleMissionPage() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (supabase.from('mission_techniciens') as any).insert({
         mission_id: mission.id,
-        user_id: technicienId,
-        statut_acceptation: 'pending',
+        technicien_id: technicienId,
+        status: 'pending',
       })
     }
 
@@ -127,7 +127,9 @@ export default function NouvelleMissionPage() {
         <div className="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center text-3xl">✅</div>
         <h2 className="text-lg font-bold text-slate-900">Mission créée !</h2>
         <p className="text-sm text-slate-500">
-          {techSelectionne ? `${techSelectionne.prenom} ${techSelectionne.nom} a été notifié.` : 'La mission est en attente d\'assignation.'}
+          {techSelectionne
+            ? `${prenom(techSelectionne.full_name)} a été notifié.`
+            : "La mission est en attente d'assignation."}
         </p>
         <div className="flex gap-3 mt-4">
           <button onClick={() => { setEtape(1); setEnvoye(false); setType(''); setClientId(''); setSiteId(''); setTechnicienId(''); setDate('') }}
@@ -145,7 +147,6 @@ export default function NouvelleMissionPage() {
 
   return (
     <div className="max-w-md mx-auto min-h-screen flex flex-col bg-slate-50">
-      {/* ── Header ── */}
       <header className="bg-slate-900 text-white px-5 pt-12 pb-5">
         <div className="flex items-center justify-between">
           <button onClick={() => etape > 1 ? setEtape((e) => e - 1) : router.back()}
@@ -161,7 +162,7 @@ export default function NouvelleMissionPage() {
       </header>
 
       <main className="flex-1 px-4 py-5">
-        {/* ── Étape 1 : Type + Client + Priorité ── */}
+        {/* Étape 1 */}
         {etape === 1 && (
           <div className="space-y-5">
             <div>
@@ -176,7 +177,7 @@ export default function NouvelleMissionPage() {
               <select value={clientId} onChange={(e) => setClientId(e.target.value)}
                 className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-800 bg-white focus:outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100">
                 <option value="">Sélectionner un client…</option>
-                {clients.map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
+                {clients.map((c) => <option key={c.id} value={c.id}>{c.full_name}</option>)}
               </select>
             </div>
 
@@ -186,7 +187,7 @@ export default function NouvelleMissionPage() {
                 <select value={siteId} onChange={(e) => setSiteId(e.target.value)}
                   className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-800 bg-white focus:outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100">
                   <option value="">Sélectionner un site…</option>
-                  {sites.map((s) => <option key={s.id} value={s.id}>{s.adresse}, {s.ville}</option>)}
+                  {sites.map((s) => <option key={s.id} value={s.id}>{s.address}, {s.city}</option>)}
                 </select>
               </div>
             )}
@@ -194,9 +195,7 @@ export default function NouvelleMissionPage() {
             <div>
               <label className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Priorité</label>
               <div className="flex gap-2 mt-2">
-                {PRIORITES.map((p) => (
-                  <BoutonChoix key={p} label={p} actif={priorite === p} onClick={() => setPriorite(p)} />
-                ))}
+                {PRIORITES.map((p) => <BoutonChoix key={p} label={p} actif={priorite === p} onClick={() => setPriorite(p)} />)}
               </div>
             </div>
 
@@ -215,14 +214,14 @@ export default function NouvelleMissionPage() {
           </div>
         )}
 
-        {/* ── Étape 2 : Technicien + Date ── */}
+        {/* Étape 2 */}
         {etape === 2 && (
           <div className="space-y-5">
             <div className="bg-slate-50 rounded-2xl p-4 space-y-2 border border-slate-100">
               {[
-                { label: 'Type',    val: type },
-                { label: 'Client',  val: clientSelectionne?.nom },
-                { label: 'Site',    val: siteSelectionne ? `${siteSelectionne.adresse}, ${siteSelectionne.ville}` : '—' },
+                { label: 'Type',     val: type },
+                { label: 'Client',   val: clientSelectionne?.full_name },
+                { label: 'Site',     val: siteSelectionne ? `${siteSelectionne.address}, ${siteSelectionne.city}` : '—' },
                 { label: 'Priorité', val: priorite },
               ].map(({ label, val }) => (
                 <div key={label} className="flex items-center gap-3 text-sm">
@@ -247,9 +246,9 @@ export default function NouvelleMissionPage() {
                       technicienId === t.id ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                     }`}>
                     <span className={`w-6 h-6 rounded-full ${COULEURS[idx % COULEURS.length]} text-white text-xs flex items-center justify-center`}>
-                      {initiales(t.prenom, t.nom)}
+                      {initiales(t.full_name)}
                     </span>
-                    {t.prenom} {t.nom[0]}.
+                    {t.full_name}
                   </button>
                 ))}
                 {techniciens.length === 0 && <p className="text-xs text-slate-400">Aucun technicien disponible</p>}
@@ -263,18 +262,18 @@ export default function NouvelleMissionPage() {
           </div>
         )}
 
-        {/* ── Étape 3 : Récap + Envoi ── */}
+        {/* Étape 3 */}
         {etape === 3 && (
           <div className="space-y-4">
             <div className="bg-white rounded-2xl shadow-sm p-4 space-y-3">
               <h3 className="font-semibold text-slate-900 text-sm border-b border-slate-100 pb-2">📋 Récapitulatif</h3>
               {[
-                { label: 'Type',       val: type },
-                { label: 'Client',     val: clientSelectionne?.nom ?? '—' },
-                { label: 'Site',       val: siteSelectionne ? `${siteSelectionne.adresse}, ${siteSelectionne.ville}` : '—' },
-                { label: 'Date',       val: date ? new Date(date).toLocaleString('fr-FR') : '—' },
-                { label: 'Priorité',   val: priorite },
-                { label: 'Technicien', val: techSelectionne ? `${techSelectionne.prenom} ${techSelectionne.nom}` : 'Non assigné' },
+                { label: 'Type',        val: type },
+                { label: 'Client',      val: clientSelectionne?.full_name ?? '—' },
+                { label: 'Site',        val: siteSelectionne ? `${siteSelectionne.address}, ${siteSelectionne.city}` : '—' },
+                { label: 'Date',        val: date ? new Date(date).toLocaleString('fr-FR') : '—' },
+                { label: 'Priorité',    val: priorite },
+                { label: 'Technicien',  val: techSelectionne ? techSelectionne.full_name : 'Non assigné' },
               ].map(({ label, val }) => (
                 <div key={label} className="flex items-start gap-3 text-sm">
                   <span className="text-slate-400 w-24 shrink-0">{label}</span>
@@ -297,7 +296,7 @@ export default function NouvelleMissionPage() {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
                   </svg>
                 )}
-                {loading ? 'Envoi…' : technicienId ? `Envoyer à ${techSelectionne?.prenom}` : 'Créer la mission'}
+                {loading ? 'Envoi…' : technicienId ? `Envoyer à ${prenom(techSelectionne?.full_name ?? '')}` : 'Créer la mission'}
               </button>
             </div>
           </div>

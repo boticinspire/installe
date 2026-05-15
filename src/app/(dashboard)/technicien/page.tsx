@@ -10,13 +10,13 @@ import { createClient } from '@/lib/supabase/client'
 
 interface Mission {
   id: string
-  titre: string
-  statut: string
-  date_planifiee: string | null
-  description: string | null
-  sites: { adresse: string; ville: string } | null
-  clients: { nom: string } | null
-  mission_techniciens: { statut_acceptation: string }[]
+  type_travaux: string
+  status: string
+  scheduled_at: string | null
+  notes: string | null
+  sites: { address: string; city: string } | null
+  clients: { full_name: string } | null
+  mission_techniciens: { status: string }[]
 }
 
 interface EtapeJournee {
@@ -53,12 +53,12 @@ function NavItem({ icon, label, actif = false }: { icon: React.ReactNode; label:
 // ─── Page principale ──────────────────────────────────────────────────────────
 
 export default function TechnicienPage() {
-  const [user, setUser] = useState<{ nom: string; prenom: string } | null>(null)
+  const [user, setUser] = useState<{ full_name: string } | null>(null)
   const [missions, setMissions] = useState<Mission[]>([])
   const [missionActive, setMissionActive] = useState<Mission | null>(null)
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState(false)
-  const [reponse, setReponse] = useState<'accepte' | 'refuse' | null>(null)
+  const [reponse, setReponse] = useState<'accepted' | 'refused' | null>(null)
 
   const db = createClient() as any
 
@@ -67,38 +67,38 @@ export default function TechnicienPage() {
       const { data: { user: authUser } } = await db.auth.getUser()
       if (!authUser) return
 
-      // Profil utilisateur
+      // Profil utilisateur (users.id = auth UUID)
       const { data: profil } = await db
         .from('users')
-        .select('nom, prenom')
+        .select('full_name')
         .eq('id', authUser.id)
         .single()
-      setUser(profil as { nom: string; prenom: string } | null)
+      setUser(profil as { full_name: string } | null)
 
-      // Missions du jour assignées à ce technicien
+      // Missions assignées à ce technicien
       const today = new Date()
       today.setHours(0, 0, 0, 0)
 
       const { data: ms } = await db
         .from('missions')
         .select(`
-          id, titre, statut, date_planifiee, description,
-          sites(adresse, ville),
-          clients(nom),
-          mission_techniciens!inner(statut_acceptation)
+          id, type_travaux, status, scheduled_at, notes,
+          sites(address, city),
+          clients(full_name),
+          mission_techniciens!inner(status)
         `)
-        .eq('mission_techniciens.user_id', authUser.id)
-        .gte('date_planifiee', today.toISOString())
-        .lt('date_planifiee', new Date(today.getTime() + 86400000).toISOString())
-        .order('date_planifiee')
+        .eq('mission_techniciens.technicien_id', authUser.id)
+        .gte('scheduled_at', today.toISOString())
+        .lt('scheduled_at', new Date(today.getTime() + 86400000).toISOString())
+        .order('scheduled_at')
 
       const missionsData = (ms ?? []) as unknown as Mission[]
       setMissions(missionsData)
 
-      // Mission active = la première en statut assigned ou in_progress avec acceptation pending
+      // Mission active = première en statut assigned/in_progress avec acceptation pending
       const active = missionsData.find((m) =>
-        ['assigned', 'in_progress'].includes(m.statut) &&
-        m.mission_techniciens[0]?.statut_acceptation === 'pending'
+        ['assigned', 'in_progress'].includes(m.status) &&
+        m.mission_techniciens[0]?.status === 'pending'
       )
       setMissionActive(active ?? null)
       setLoading(false)
@@ -115,39 +115,38 @@ export default function TechnicienPage() {
 
     await db
       .from('mission_techniciens')
-      .update({ statut_acceptation: accepte ? 'accepte' : 'refuse' })
+      .update({ status: accepte ? 'accepted' : 'refused' })
       .eq('mission_id', missionActive.id)
-      .eq('user_id', authUser.id)
+      .eq('technicien_id', authUser.id)
 
     if (accepte) {
       await db
         .from('missions')
-        .update({ statut: 'in_progress' })
+        .update({ status: 'in_progress' })
         .eq('id', missionActive.id)
     }
 
-    setReponse(accepte ? 'accepte' : 'refuse')
+    setReponse(accepte ? 'accepted' : 'refused')
     setActionLoading(false)
   }
 
-  // Construire les étapes de la journée
   const etapes: EtapeJournee[] = missions.map((m, i) => {
-    const heure = m.date_planifiee
-      ? new Date(m.date_planifiee).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+    const heure = m.scheduled_at
+      ? new Date(m.scheduled_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
       : '—'
     let statut: EtapeJournee['statut'] = 'a_venir'
-    if (m.statut === 'completed') statut = 'termine'
-    else if (m.statut === 'in_progress') statut = 'en_cours'
+    if (m.status === 'completed') statut = 'termine'
+    else if (m.status === 'in_progress') statut = 'en_cours'
     return {
       id: m.id,
-      titre: m.titre,
+      titre: m.type_travaux,
       horaire: heure,
       statut,
-      detail: m.statut === 'completed' ? 'Terminé · Rapport envoyé' : m.statut === 'in_progress' ? 'En cours' : 'À venir',
+      detail: m.status === 'completed' ? 'Terminé · Rapport envoyé' : m.status === 'in_progress' ? 'En cours' : 'À venir',
     }
   })
 
-  const nomAffiche = user ? `${user.prenom} ${user.nom}` : '…'
+  const nomAffiche = user ? user.full_name : '…'
 
   return (
     <div className="max-w-md mx-auto min-h-screen flex flex-col bg-slate-50">
@@ -178,21 +177,20 @@ export default function TechnicienPage() {
                 <span className="text-blue-500 mt-0.5">🔔</span>
                 <p className="text-sm text-blue-800 leading-snug">
                   Nouvelle mission assignée — <span className="font-semibold">
-                    {missionActive.date_planifiee
-                      ? new Date(missionActive.date_planifiee).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+                    {missionActive.scheduled_at
+                      ? new Date(missionActive.scheduled_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
                       : '—'}
                   </span>
                 </p>
               </div>
             )}
 
-            {/* Feedback réponse */}
-            {reponse === 'accepte' && (
+            {reponse === 'accepted' && (
               <div className="bg-emerald-50 border border-emerald-200 rounded-2xl px-4 py-3 text-center">
                 <p className="text-emerald-700 font-semibold text-sm">✅ Mission acceptée — bonne intervention !</p>
               </div>
             )}
-            {reponse === 'refuse' && (
+            {reponse === 'refused' && (
               <div className="bg-red-50 border border-red-200 rounded-2xl px-4 py-3 text-center">
                 <p className="text-red-700 font-semibold text-sm">❌ Indisponibilité signalée au secrétariat</p>
               </div>
@@ -209,7 +207,9 @@ export default function TechnicienPage() {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
                       </svg>
                       <p className="font-semibold text-slate-900 text-sm">
-                        {missionActive.sites ? `${missionActive.sites.adresse}, ${missionActive.sites.ville}` : missionActive.titre}
+                        {missionActive.sites
+                          ? `${missionActive.sites.address}, ${missionActive.sites.city}`
+                          : missionActive.type_travaux}
                       </p>
                     </div>
                     <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-600 shrink-0">Urgent</span>
@@ -217,10 +217,10 @@ export default function TechnicienPage() {
                 </div>
                 <div className="px-4 py-3 space-y-2">
                   {[
-                    { label: 'Client', val: missionActive.clients?.nom ?? '—' },
-                    { label: 'Travaux', val: missionActive.titre },
-                    { label: 'Heure', val: missionActive.date_planifiee
-                        ? new Date(missionActive.date_planifiee).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+                    { label: 'Client',   val: missionActive.clients?.full_name ?? '—' },
+                    { label: 'Travaux',  val: missionActive.type_travaux },
+                    { label: 'Heure',    val: missionActive.scheduled_at
+                        ? new Date(missionActive.scheduled_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
                         : '—' },
                   ].map(({ label, val }) => (
                     <div key={label} className="flex items-center">
@@ -235,9 +235,7 @@ export default function TechnicienPage() {
             {/* Progression journée */}
             {etapes.length > 0 ? (
               <div className="bg-white rounded-2xl shadow-sm px-4 pt-4 pb-2">
-                <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-4">
-                  Progression de la journée
-                </h2>
+                <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-4">Progression de la journée</h2>
                 {etapes.map((e, i) => (
                   <div key={e.id} className="flex gap-3">
                     <div className="flex flex-col items-center">
