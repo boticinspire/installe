@@ -94,7 +94,8 @@ export default function NouvelleMissionPage() {
 
   async function handleSubmit() {
     setLoading(true)
-    const { data: mission, error } = await supabase.from('missions').insert({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: mission, error } = await (supabase.from('missions') as any).insert({
       site_id: siteId || null,
       client_id: clientId || null,
       titre: `${type} — ${siteSelectionne?.adresse ?? ''}`,
@@ -106,7 +107,8 @@ export default function NouvelleMissionPage() {
     if (error || !mission) { setLoading(false); return }
 
     if (technicienId) {
-      await supabase.from('mission_techniciens').insert({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (supabase.from('mission_techniciens') as any).insert({
         mission_id: mission.id,
         user_id: technicienId,
         statut_acceptation: 'pending',
